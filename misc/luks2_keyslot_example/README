@@ -1,0 +1,20 @@
+to create LUKSv2 container run:
+
+$(top_level_dir)/src/cryptsetup --type luks2 luksFormat /dev/xxx
+
+nvcrypt_token example requires libnvcrypt library installed together
+with TPM 1.2 chip present and enabled on the system
+
+nvcrypt_token:
+	- create LUKS2 device (with at least one keyslot)
+	- use nvcrypt_token to create new keyslot with two part passprase (nvkeyslot)
+	- to activate LUKS2 using nvkeyslot use nvcrypt_token
+	- to remove additional data in TPM for unlocking nvkeyslot, use nvcrypt_token
+
+ncrypt_token_keyring:
+	- create LUKS2 device (with at least one keyslot)
+	- create luks2 keyring token (cryptsetup token add command)
+	- use nvcrypt_token_keyring to create new keyslot with two part passprase (nvkeyslot)
+	- to load passphrase for nvkeyslot in keyring use nvcrypt_token_keyring load command
+	- to activate volume using nvkeyslot run cryptsetup open (it'll perform activation by token)
+	- remove passphrase from session keyring when not needed anymore (cryptsetup doesn't remove passphrase from keyring)
