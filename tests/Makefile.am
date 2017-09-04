@@ -47,7 +47,7 @@ EXTRA_DIST = compatimage.img.bz2 compatv10image.img.bz2 \
 	reencryption-compat-test \
 	tcrypt-compat-test \
 	luks1-compat-test \
-	luks2-validation-test \
+	luks2-validation-test generators/lib.sh generators/generate-luks2-* \
 	device-test \
 	keyring-test \
 	integrity-compat-test \
