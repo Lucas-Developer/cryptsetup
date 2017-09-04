@@ -49,7 +49,6 @@ struct crypt_device {
 	struct crypt_pbkdf_type pbkdf;
 
 	/* global context scope settings */
-	unsigned iter_time_set:1;
 	unsigned key_in_keyring:1;
 
 	// FIXME: private binary headers and access it properly
@@ -597,185 +596,10 @@ int crypt_set_data_device(struct crypt_device *cd, const char *device)
 	return crypt_check_data_device_size(cd);
 }
 
-/*
- * PBKDF configuration interface
- */
-static int verify_pbkdf_params(struct crypt_device *cd,
-			       const struct crypt_pbkdf_type *pbkdf)
+/* internal only */
+struct crypt_pbkdf_type *crypt_get_pbkdf(struct crypt_device *cd)
 {
-	const char *pbkdf_type;
-	int r = 0;
-
-	if (!pbkdf->type || !pbkdf->hash || !pbkdf->time_ms)
-		return -EINVAL;
-
-	/* TODO: initialise crypto and check the hash and pbkdf are both available */
-	r = crypt_parse_pbkdf(pbkdf->type, &pbkdf_type);
-	if (r < 0) {
-		log_err(cd, _("Unknown PBKDF type %s.\n"), pbkdf->type);
-		return r;
-	}
-
-	if (!strcmp(pbkdf_type, CRYPT_KDF_PBKDF2)) {
-		if (pbkdf->max_memory_kb || pbkdf->parallel_threads) {
-			log_err(cd, _("PBKDF max memory or parallel threads must not be set with pbkdf2.\n"));
-			return -EINVAL;
-		}
-		return 0;
-	}
-
-	if (pbkdf->max_memory_kb > MAX_PBKDF_MEMORY) {
-		log_err(cd, _("Requested maximum PBKDF memory cost is too high (maximum is %d kilobytes).\n"),
-			MAX_PBKDF_MEMORY);
-		r = -EINVAL;
-	}
-	if (!pbkdf->max_memory_kb) {
-		log_err(cd, _("Requested maximum PBKDF memory can not be zero.\n"));
-		r = -EINVAL;
-	}
-	if (!pbkdf->parallel_threads) {
-		log_err(cd, _("Requested PBKDF parallel threads can not be zero.\n"));
-		r = -EINVAL;
-	}
-	if (!pbkdf->time_ms) {
-		log_err(cd, _("Requested PBKDF target time can not be zero.\n"));
-		r = -EINVAL;
-	}
-
-	return r;
-}
-
-static int init_pbkdf_type(struct crypt_device *cd, const struct crypt_pbkdf_type *pbkdf)
-{
-	const char *hash, *type;
-	unsigned cpus;
-	int r;
-	struct crypt_pbkdf_type default_luks2 = {
-		.type = DEFAULT_LUKS2_PBKDF,
-		.hash = DEFAULT_LUKS1_HASH,
-		.time_ms = cd->iter_time_set ? cd->pbkdf.time_ms : DEFAULT_LUKS2_ITER_TIME,
-		.max_memory_kb = DEFAULT_LUKS2_MEMORY_KB,
-		.parallel_threads = DEFAULT_LUKS2_PARALLEL_THREADS
-	}, default_luks1 = {
-		.type = CRYPT_KDF_PBKDF2,
-		.hash = DEFAULT_LUKS1_HASH,
-		.time_ms = cd->iter_time_set ? cd->pbkdf.time_ms : DEFAULT_LUKS1_ITER_TIME
-	};
-
-	if (!pbkdf) {
-		pbkdf = isLUKS2(cd->type) ? &default_luks2 : &default_luks1;
-
-		/*
-		 * black magic due to crypt_set_iteration_time() but we don't
-		 * want crypt_get_pbkdf_type() return invalid parameters
-		 */
-		r = verify_pbkdf_params(cd, pbkdf);
-		if (r)
-			return r;
-	}
-
-	/*
-	 * Crypto backend may be not initialized here,
-	 * cannot check if algorithms are really available.
-	 * It will fail later anyway :-)
-	 */
-	type = strdup(pbkdf->type);
-	hash = strdup(pbkdf->hash);
-
-	if (!type || !hash) {
-		free(CONST_CAST(void*)type);
-		free(CONST_CAST(void*)hash);
-		return -ENOMEM;
-	}
-
-	free(CONST_CAST(void*)cd->pbkdf.type);
-	free(CONST_CAST(void*)cd->pbkdf.hash);
-	cd->pbkdf.type = type;
-	cd->pbkdf.hash = hash;
-
-	/* Reset iteration count so benchmark must run again. */
-	cd->pbkdf.iterations = 0;
-
-	cd->pbkdf.time_ms = pbkdf->time_ms;
-	cd->pbkdf.max_memory_kb = pbkdf->max_memory_kb;
-	cd->pbkdf.parallel_threads = pbkdf->parallel_threads;
-
-	if (cd->pbkdf.parallel_threads > MAX_PBKDF_THREADS) {
-		log_dbg("Maximum PBKDF threads is %d (requested %d).",
-			MAX_PBKDF_THREADS, cd->pbkdf.parallel_threads);
-		cd->pbkdf.parallel_threads = MAX_PBKDF_THREADS;
-	}
-
-	if (cd->pbkdf.parallel_threads) {
-		cpus = crypt_cpusonline();
-		if (cd->pbkdf.parallel_threads > cpus) {
-			log_dbg("Only %u active CPUs detected, "
-				"PBKDF threads decreased from %d to %d.",
-				cpus, cd->pbkdf.parallel_threads, cpus);
-			cd->pbkdf.parallel_threads = cpus;
-		}
-	}
-
-	return 0;
-}
-
-int crypt_set_pbkdf_type(struct crypt_device *cd, const struct crypt_pbkdf_type *pbkdf)
-{
-	int r;
-
-	if (onlyLUKS2(cd))
-		return -EINVAL;
-
-	if (!pbkdf) {
-		log_dbg("Resetting pbkdf type to default");
-		cd->iter_time_set = 0;
-		return init_pbkdf_type(cd, NULL);
-	}
-
-	log_dbg("PBKDF %s, hash %s, time_ms %u, max_memory_kb %u, parallel_threads %u.",
-		pbkdf->type ?: "(none)", pbkdf->hash ?: "(none)", pbkdf->time_ms,
-		pbkdf->max_memory_kb, pbkdf->parallel_threads);
-
-	if (verify_pbkdf_params(cd, pbkdf))
-		return -EINVAL;
-
-	r = init_pbkdf_type(cd, pbkdf);
-	if (!r)
-		cd->iter_time_set = 1;
-
-	return r;
-}
-
-const struct crypt_pbkdf_type *crypt_get_pbkdf_type(struct crypt_device *cd)
-{
-	return (cd && cd->pbkdf.type) ? &cd->pbkdf : NULL;
-}
-
-void crypt_set_iteration_time(struct crypt_device *cd, uint64_t iteration_time_ms)
-{
-	int r = 0;
-	struct crypt_pbkdf_type tmp;
-
-	if (!cd)
-		return;
-
-	if (isLUKS2(cd->type)) {
-		if (iteration_time_ms > UINT32_MAX)
-			iteration_time_ms = DEFAULT_LUKS2_ITER_TIME;
-
-		tmp = *crypt_get_pbkdf_type(cd);
-		tmp.time_ms = (uint32_t)iteration_time_ms;
-
-		r = crypt_set_pbkdf_type(cd, &tmp);
-	} else {
-		if (iteration_time_ms > UINT32_MAX)
-			iteration_time_ms = DEFAULT_LUKS1_ITER_TIME;
-		cd->pbkdf.time_ms = (uint32_t)iteration_time_ms;
-		cd->iter_time_set = 1;
-	}
-
-	if (!r)
-		log_dbg("Iteration time set to %" PRIu64 " miliseconds.", iteration_time_ms);
+	return &cd->pbkdf;
 }
 
 /*
@@ -813,17 +637,18 @@ static int _crypt_load_luks2(struct crypt_device *cd, int reload)
 		goto out;
 	}
 
+	if (verify_pbkdf_params(cd, &cd->pbkdf)) {
+		r = init_pbkdf_type(cd, NULL, CRYPT_LUKS2);
+		if (r)
+			goto out;
+	}
+
 	if (reload) {
 		LUKS2_hdr_free(&cd->u.luks2.hdr);
 		free(cd->u.luks2.cipher);
 		free(cd->u.luks2.cipher_mode);
-	} else {
+	} else
 		cd->type = type;
-		if ((r = init_pbkdf_type(cd, NULL))) {
-			cd->type = NULL;
-			goto out;
-		}
-	}
 
 	memcpy(&cd->u.luks2.hdr, &hdr2, sizeof(hdr2));
 
@@ -855,7 +680,6 @@ static int _crypt_load_luks(struct crypt_device *cd, const char *requested_type,
 			    int require_header, int repair)
 {
 	struct luks_phdr hdr = {};
-	struct crypt_pbkdf_type pbkdf = {};
 	int r, version = 0;
 
 	r = init_crypto(cd);
@@ -872,8 +696,8 @@ static int _crypt_load_luks(struct crypt_device *cd, const char *requested_type,
 			return -EINVAL;
 		}
 
-		if (repair && !cd->pbkdf.type) {
-			r = init_pbkdf_type(cd, NULL);
+		if (verify_pbkdf_params(cd, &cd->pbkdf)) {
+			r = init_pbkdf_type(cd, NULL, CRYPT_LUKS1);
 			if (r)
 				return r;
 		}
@@ -887,13 +711,15 @@ static int _crypt_load_luks(struct crypt_device *cd, const char *requested_type,
 			goto out;
 		}
 
-		pbkdf.type = CRYPT_KDF_PBKDF2;
-		pbkdf.hash = hdr.hashSpec;
-		pbkdf.time_ms = cd->iter_time_set ? cd->pbkdf.time_ms : DEFAULT_LUKS1_ITER_TIME;
-
-		r = init_pbkdf_type(cd, &pbkdf);
-		if (r)
-			goto out;
+		/* Set hash to the same as in the loaded header */
+		if (!cd->pbkdf.hash || strcmp(cd->pbkdf.hash, hdr.hashSpec)) {
+			free(CONST_CAST(void*)cd->pbkdf.hash);
+			cd->pbkdf.hash = strdup(hdr.hashSpec);
+			if (!cd->pbkdf.hash) {
+				r = -ENOMEM;
+				goto out;
+			}
+		}
 
 		memcpy(&cd->u.luks1.hdr, &hdr, sizeof(hdr));
 	} else if (isLUKS2(requested_type) || version == 2 || version == 0) {
@@ -1505,14 +1331,16 @@ static int _crypt_format_luks1(struct crypt_device *cd,
 	else
 		cd->volume_key = crypt_generate_volume_key(cd, volume_key_size);
 
-	if(!cd->volume_key)
+	if (!cd->volume_key)
 		return -ENOMEM;
 
-	r = init_pbkdf_type(cd, NULL);
-	if (r)
-		return r;
+	if (verify_pbkdf_params(cd, &cd->pbkdf)) {
+		r = init_pbkdf_type(cd, NULL, CRYPT_LUKS1);
+		if (r)
+			return r;
+	}
 
-	if (params && params->hash && strcmp(params->hash, DEFAULT_LUKS1_HASH)) {
+	if (params && params->hash && strcmp(params->hash, cd->pbkdf.hash)) {
 		free(CONST_CAST(void*)cd->pbkdf.hash);
 		cd->pbkdf.hash = strdup(params->hash);
 		if (!cd->pbkdf.hash)
@@ -1618,10 +1446,10 @@ static int _crypt_format_luks2(struct crypt_device *cd,
 	if (!cd->volume_key)
 		return -ENOMEM;
 
-	if (params)
+	if (params && params->pbkdf)
 		r = crypt_set_pbkdf_type(cd, params->pbkdf);
-	else
-		r = init_pbkdf_type(cd, NULL);
+	else if (verify_pbkdf_params(cd, &cd->pbkdf))
+		r = init_pbkdf_type(cd, NULL, CRYPT_LUKS2);
 
 	if (r < 0)
 		return r;

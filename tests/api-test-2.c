@@ -747,8 +747,10 @@ static void AddDeviceLuks2(void)
 	crypt_free(cd);
 	/* some invalid parameters known to cause troubles */
 	OK_(crypt_init(&cd, DEVICE_2));
-	crypt_set_iteration_time(cd, 0); /* wrong for argon2 but we don't know the pbkdf type yet */
-	FAIL_(crypt_format(cd, CRYPT_LUKS2, cipher, cipher_mode, NULL, key, key_size, NULL), "Invalid argon2 params");
+	crypt_set_iteration_time(cd, 0); /* wrong for argon2 but we don't know the pbkdf type yet, ignored */
+	OK_(crypt_format(cd, CRYPT_LUKS2, cipher, cipher_mode, NULL, key, key_size, NULL));
+	crypt_free(cd);
+	OK_(crypt_init(&cd, DEVICE_2));
 	crypt_set_iteration_time(cd, 1);
 	OK_(crypt_format(cd, CRYPT_LUKS2, cipher, cipher_mode, NULL, key, key_size, NULL));
 	EQ_(crypt_keyslot_add_by_volume_key(cd, 0, NULL, key_size, PASSPHRASE, strlen(PASSPHRASE)), 0);
@@ -1002,8 +1004,8 @@ static void Luks2HeaderLoad(void)
 	OK_(crypt_load(cd, CRYPT_LUKS, NULL));
 	crypt_free(cd);
 	OK_(crypt_init(&cd, DEVICE_4));
-	crypt_set_iteration_time(cd, 0); // invalid for argon2 pbkdf
-	FAIL_(crypt_load(cd, CRYPT_LUKS, NULL), "Invalid pbkdf parameters");
+	crypt_set_iteration_time(cd, 0); /* invalid for argon2 pbkdf, ignored */
+	OK_(crypt_load(cd, CRYPT_LUKS, NULL));
 	crypt_free(cd);
 
 	/* check load sets proper device type */
@@ -2047,28 +2049,28 @@ static void Pbkdf(void)
 
 	// test empty context
 	OK_(crypt_init(&cd, DEVICE_1));
-	FAIL_(crypt_set_pbkdf_type(cd, &argon2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, &pbkdf2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, NULL), "Unsupported with non-LUKS2 devices");
 	NULL_(crypt_get_pbkdf_type(cd));
+	OK_(crypt_set_pbkdf_type(cd, &argon2));
+	NOTNULL_(crypt_get_pbkdf_type(cd));
+	OK_(crypt_set_pbkdf_type(cd, &pbkdf2));
+	NOTNULL_(crypt_get_pbkdf_type(cd));
+	OK_(crypt_set_pbkdf_type(cd, NULL));
+	NOTNULL_(crypt_get_pbkdf_type(cd));
 
 	// test plain device
 	OK_(crypt_format(cd, CRYPT_PLAIN, cipher, mode, NULL, NULL, 32, &params));
-	FAIL_(crypt_set_pbkdf_type(cd, &argon2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, &pbkdf2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, NULL), "Unsupported with non-LUKS2 devices");
-	NULL_(crypt_get_pbkdf_type(cd));
+	OK_(crypt_set_pbkdf_type(cd, &argon2));
+	OK_(crypt_set_pbkdf_type(cd, &pbkdf2));
+	OK_(crypt_set_pbkdf_type(cd, NULL));
+	NOTNULL_(crypt_get_pbkdf_type(cd));
 	crypt_free(cd);
 
-	// TODO: add tcrypt, vera_crypt...
-
 	// test LUKSv1 device
-	// test crypt_set_pbkdf_type() is disabled for LUKSv1
 	OK_(crypt_init(&cd, DEVICE_1));
 	OK_(crypt_format(cd, CRYPT_LUKS1, cipher, mode, NULL, NULL, 32, NULL));
 	FAIL_(crypt_set_pbkdf_type(cd, &argon2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, &pbkdf2), "Unsupported with non-LUKS2 devices");
-	FAIL_(crypt_set_pbkdf_type(cd, NULL), "Unsupported with non-LUKS2 devices");
+	OK_(crypt_set_pbkdf_type(cd, &pbkdf2));
+	OK_(crypt_set_pbkdf_type(cd, NULL));
 	NOTNULL_(pbkdf = crypt_get_pbkdf_type(cd));
 	EQ_(pbkdf->time_ms, DEFAULT_LUKS1_ITER_TIME);
 	crypt_free(cd);

@@ -72,6 +72,12 @@ void crypt_free_volume_key(struct volume_key *vk);
 void crypt_volume_key_set_description(struct volume_key *key, const char *key_description);
 const char *crypt_volume_key_get_description(const struct volume_key *key);
 
+struct crypt_pbkdf_type *crypt_get_pbkdf(struct crypt_device *cd);
+int init_pbkdf_type(struct crypt_device *cd,
+		    const struct crypt_pbkdf_type *pbkdf,
+		    const char *dev_type);
+int verify_pbkdf_params(struct crypt_device *cd,
+			const struct crypt_pbkdf_type *pbkdf);
 int crypt_benchmark_pbkdf_internal(struct crypt_device *cd,
 				   struct crypt_pbkdf_type *pbkdf,
 				   size_t volume_key_size);

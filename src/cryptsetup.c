@@ -51,7 +51,6 @@ static uint64_t opt_offset = 0;
 static uint64_t opt_skip = 0;
 static int opt_skip_valid = 0;
 static int opt_readonly = 0;
-static int opt_iteration_time = 0;
 static int opt_version_mode = 0;
 static int opt_timeout = 0;
 static int opt_tries = 3;
@@ -71,9 +70,13 @@ static int opt_veracrypt = 0;
 static int opt_veracrypt_pim = -1;
 static int opt_veracrypt_query_pim = 0;
 static int opt_deferred_remove = 0;
+//FIXME: check uint32 overflow for long type
 static const char *opt_pbkdf = NULL;
 static long opt_pbkdf_memory = DEFAULT_LUKS2_MEMORY_KB;
 static long opt_pbkdf_parallel = DEFAULT_LUKS2_PARALLEL_THREADS;
+static long opt_pbkdf_iterations = 0;
+static int opt_iteration_time = 0;
+
 static int opt_disable_locks = 0;
 static int opt_disable_keyring = 0;
 static const char *opt_priority = NULL; /* normal */
@@ -835,24 +838,33 @@ fail:
 	return -EINVAL;
 }
 
-static int set_pbkdf_params(struct crypt_device *cd)
+static int set_pbkdf_params(struct crypt_device *cd, const char *dev_type)
 {
-	const char *pbkdf_alg = opt_pbkdf ?: DEFAULT_LUKS2_PBKDF;
-	struct crypt_pbkdf_type pbkdf = {
-		.type = pbkdf_alg,
-		.hash = opt_hash ?: DEFAULT_LUKS1_HASH,
-		.time_ms = opt_iteration_time ?: DEFAULT_LUKS2_ITER_TIME,
-		.max_memory_kb = strcmp(pbkdf_alg, CRYPT_KDF_PBKDF2) ? opt_pbkdf_memory : 0,
-		.parallel_threads = strcmp(pbkdf_alg, CRYPT_KDF_PBKDF2) ? opt_pbkdf_parallel : 0
-	};
+	struct crypt_pbkdf_type pbkdf = {};
 
-	if (crypt_get_type(cd) && !strcmp(crypt_get_type(cd), CRYPT_LUKS2))
-		return crypt_set_pbkdf_type(cd, &pbkdf);
+	if (!strcmp(dev_type, CRYPT_LUKS1)) {
+		if (opt_pbkdf && strcmp(opt_pbkdf, CRYPT_KDF_PBKDF2))
+			return -EINVAL;
+		pbkdf.type = CRYPT_KDF_PBKDF2;
+		pbkdf.hash = opt_hash ?: DEFAULT_LUKS1_HASH;
+		pbkdf.time_ms = opt_iteration_time ?: DEFAULT_LUKS1_ITER_TIME;
+	} else if (!strcmp(dev_type, CRYPT_LUKS2)) {
+		pbkdf.type = opt_pbkdf ?: DEFAULT_LUKS2_PBKDF;
+		pbkdf.hash = opt_hash ?: DEFAULT_LUKS1_HASH;
+		pbkdf.time_ms = opt_iteration_time ?: DEFAULT_LUKS2_ITER_TIME;
+		if (strcmp(pbkdf.type, CRYPT_KDF_PBKDF2)) {
+			pbkdf.max_memory_kb = opt_pbkdf_memory;
+			pbkdf.parallel_threads = opt_pbkdf_parallel;
+		}
+	} else
+		return 0;
 
-	if (opt_iteration_time)
-		crypt_set_iteration_time(cd, opt_iteration_time);
+	if (opt_pbkdf_iterations) {
+		pbkdf.iterations = opt_pbkdf_iterations;
+		pbkdf.flags |= CRYPT_PBKDF_NO_BENCHMARK;
+	}
 
-	return 0;
+	return crypt_set_pbkdf_type(cd, &pbkdf);
 }
 
 static int action_luksRepair(void)
@@ -928,17 +940,8 @@ static int action_luksFormat(void)
 		.data_alignment = opt_align_payload,
 		.data_device = opt_header_device ? action_argv[0] : NULL,
 	};
-	const char *pbkdf_alg = opt_pbkdf ?: DEFAULT_LUKS2_PBKDF;
-	struct crypt_pbkdf_type pbkdf = {
-		.type = pbkdf_alg,
-		.hash = params.hash,
-		.time_ms = opt_iteration_time ?: DEFAULT_LUKS2_ITER_TIME,
-		.max_memory_kb = strcmp(pbkdf_alg, CRYPT_KDF_PBKDF2) ? opt_pbkdf_memory : 0,
-		.parallel_threads = strcmp(pbkdf_alg, CRYPT_KDF_PBKDF2) ? opt_pbkdf_parallel : 0
-	};
 	struct crypt_params_integrity params_integrity = {};
 	struct crypt_params_luks2 params2 = {
-		.pbkdf = &pbkdf,
 		.data_alignment = params.data_alignment,
 		.data_device = params.data_device,
 		.sector_size = opt_sector_size,
@@ -1017,15 +1020,19 @@ static int action_luksFormat(void)
 			goto out;
 	}
 
-	if (luks_version == 1) {
-		r = set_pbkdf_params(cd);
-		if (r) {
-			log_err(_("Failed to set pbkdf parameters.\n"));
-			goto out;
-		}
+	if (luks_version == 1)
+		r = set_pbkdf_params(cd, CRYPT_LUKS1);
+	else
+		r = set_pbkdf_params(cd, CRYPT_LUKS2);
+	if (r) {
+		log_err(_("Failed to set pbkdf parameters.\n"));
+		goto out;
+	}
+
+	if (luks_version == 1)
 		r = crypt_format(cd, CRYPT_LUKS1, cipher, cipher_mode,
 				 opt_uuid, key, keysize, &params);
-	} else
+	else
 		r = crypt_format(cd, CRYPT_LUKS2, cipher, cipher_mode,
 				 opt_uuid, key, keysize, &params2);
 	check_signal(&r);
@@ -1279,7 +1286,7 @@ static int action_luksAddKey(void)
 		opt_force_password = 1;
 
 	keysize = crypt_get_volume_key_size(cd);
-	r = set_pbkdf_params(cd);
+	r = set_pbkdf_params(cd, crypt_get_type(cd));
 	if (r) {
 		log_err(_("Failed to set pbkdf parameters.\n"));
 		goto out;
@@ -1363,7 +1370,7 @@ static int action_luksChangeKey(void)
 	if (tools_is_cipher_null(crypt_get_cipher(cd)))
 		opt_force_password = 1;
 
-	r = set_pbkdf_params(cd);
+	r = set_pbkdf_params(cd, crypt_get_type(cd));
 	if (r) {
 		log_err(_("Failed to set pbkdf parameters.\n"));
 		goto out;
@@ -2012,7 +2019,6 @@ int main(int argc, const char **argv)
 		{ "offset",            'o',  POPT_ARG_STRING, &popt_tmp,                2, N_("The start offset in the backend device"), N_("SECTORS") },
 		{ "skip",              'p',  POPT_ARG_STRING, &popt_tmp,                3, N_("How many sectors of the encrypted data to skip at the beginning"), N_("SECTORS") },
 		{ "readonly",          'r',  POPT_ARG_NONE, &opt_readonly,              0, N_("Create a readonly mapping"), NULL },
-		{ "iter-time",         'i',  POPT_ARG_INT, &opt_iteration_time,         0, N_("PBKDF2 iteration time for LUKS (in ms)"), N_("msecs") },
 		{ "batch-mode",        'q',  POPT_ARG_NONE, &opt_batch_mode,            0, N_("Do not ask for confirmation"), NULL },
 		{ "timeout",           't',  POPT_ARG_INT, &opt_timeout,                0, N_("Timeout for interactive passphrase prompt (in seconds)"), N_("secs") },
 		{ "tries",             'T',  POPT_ARG_INT, &opt_tries,                  0, N_("How often the input of the passphrase can be retried"), NULL },
@@ -2036,9 +2042,11 @@ int main(int argc, const char **argv)
 		{ "perf-same_cpu_crypt",'\0', POPT_ARG_NONE, &opt_perf_same_cpu_crypt,  0, N_("Use dm-crypt same_cpu_crypt performance compatibility option."), NULL },
 		{ "perf-submit_from_crypt_cpus",'\0', POPT_ARG_NONE, &opt_perf_submit_from_crypt_cpus,0,N_("Use dm-crypt submit_from_crypt_cpus performance compatibility option."), NULL },
 		{ "deferred",          '\0', POPT_ARG_NONE, &opt_deferred_remove,       0, N_("Device removal is deferred until the last user closes it."), NULL },
-		{ "pbkdf",             '\0', POPT_ARG_STRING, &opt_pbkdf,               0, N_("Password-based key derivation algorithm (PBKDF) for LUKS2 (argon2/pbkdf2)."), NULL },
-		{ "pbkdf-memory",      '\0', POPT_ARG_LONG, &opt_pbkdf_memory,          0, N_("Password-based key derivation algorithm (PBKDF) memory cost limit"), N_("kilobytes") },
-		{ "pbkdf-parallel",    '\0', POPT_ARG_LONG, &opt_pbkdf_parallel,        0, N_("Password-based key derivation algorithm (PBKDF) parallel cost "), N_("threads") },
+		{ "iter-time",         'i',  POPT_ARG_INT, &opt_iteration_time,         0, N_("PBKDF iteration time for LUKS (in ms)"), N_("msecs") },
+		{ "pbkdf",             '\0', POPT_ARG_STRING, &opt_pbkdf,               0, N_("PBKDF algorithm (for LUKS2) (argon2i/argon2id/pbkdf2)."), NULL },
+		{ "pbkdf-memory",      '\0', POPT_ARG_LONG, &opt_pbkdf_memory,          0, N_("PBKDF memory cost limit"), N_("kilobytes") },
+		{ "pbkdf-parallel",    '\0', POPT_ARG_LONG, &opt_pbkdf_parallel,        0, N_("PBKDF parallel cost "), N_("threads") },
+		{ "pbkdf-force-iterations",'\0',POPT_ARG_LONG, &opt_pbkdf_iterations,   0, N_("PBKDF iterations cost (forced, disables benchmark)"), NULL },
 		{ "priority",          '\0', POPT_ARG_STRING, &opt_priority,            0, N_("Keyslot priority (ignore/normal/prefer)"), NULL },
 		{ "disable-locks",     '\0', POPT_ARG_NONE, &opt_disable_locks,         0, N_("Disable locking of on-disk metadata"), NULL },
 		{ "disable-keyring",   '\0', POPT_ARG_NONE, &opt_disable_keyring,       0, N_("Disable loading volume keys via kernel keyring"), NULL },
@@ -2343,7 +2351,12 @@ int main(int argc, const char **argv)
 
 	if (opt_pbkdf && crypt_parse_pbkdf(opt_pbkdf, &opt_pbkdf))
 		usage(popt_context, EXIT_FAILURE,
-		_("Password-based key derivation function (PBKDF) can be only pbkdf2 or argon2i/argon2id.\n"),
+		_("PBKDF can be only pbkdf2 or argon2i/argon2id.\n"),
+		poptGetInvocationName(popt_context));
+
+	if (opt_pbkdf_iterations && opt_iteration_time)
+		usage(popt_context, EXIT_FAILURE,
+		_("PBKDF forced iterations cannot be combined with iteration time option.\n"),
 		poptGetInvocationName(popt_context));
 
 	if ((opt_sector_size != 512 && strcmp(aname, "luksFormat")) || opt_sector_size < 512

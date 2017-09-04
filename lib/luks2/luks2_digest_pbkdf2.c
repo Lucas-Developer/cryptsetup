@@ -110,9 +110,13 @@ static int PBKDF2_digest_store(struct crypt_device *cd,
 	if (r < 0)
 		return r;
 
-	r = crypt_benchmark_pbkdf_internal(cd, &pbkdf, volume_key_len);
-	if (r < 0)
-		return r;
+	if (crypt_get_pbkdf(cd)->flags & CRYPT_PBKDF_NO_BENCHMARK)
+		pbkdf.iterations = MIN_PBKDF2_ITERATIONS;
+	else {
+		r = crypt_benchmark_pbkdf_internal(cd, &pbkdf, volume_key_len);
+		if (r < 0)
+			return r;
+	}
 
 	r = crypt_pbkdf(CRYPT_KDF_PBKDF2, pbkdf.hash, volume_key, volume_key_len,
 			salt, LUKS_SALTSIZE, digest_raw, crypt_hmac_size(pbkdf.hash),
