@@ -178,10 +178,10 @@ int crypt_set_pbkdf_type(struct crypt_device *cd, const struct crypt_pbkdf_type 
 	if (!cd)
 		return -EINVAL;
 
-	if (!pbkdf) {
+	if (!pbkdf)
 		log_dbg("Resetting pbkdf type to default");
-		crypt_get_pbkdf(cd)->flags = 0;
-	}
+
+	crypt_get_pbkdf(cd)->flags = 0;
 
 	return init_pbkdf_type(cd, pbkdf, crypt_get_type(cd));
 }
