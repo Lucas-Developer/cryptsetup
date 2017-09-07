@@ -2183,6 +2183,16 @@ static void Pbkdf(void)
 	EQ_(pbkdf->max_memory_kb, DEFAULT_LUKS2_MEMORY_KB);
 	EQ_(pbkdf->parallel_threads, _min(cpus_online(), DEFAULT_LUKS2_PARALLEL_THREADS));
 	crypt_free(cd);
+
+	// test crypt_set_pbkdf_type() overwrites invalid value set by crypt_set_iteration_time()
+	OK_(crypt_init(&cd, DEVICE_1));
+	crypt_set_iteration_time(cd, 0);
+	OK_(crypt_set_pbkdf_type(cd, &argon2));
+	NOTNULL_(pbkdf = crypt_get_pbkdf_type(cd));
+	OK_(strcmp(pbkdf->type, argon2.type));
+	EQ_(pbkdf->time_ms, argon2.time_ms);
+
+	crypt_free(cd);
 }
 
 static void Luks2KeyslotAdd(void)
