@@ -127,7 +127,7 @@ int LUKS2_generate_hdr(
 	unsigned int alignOffset,
 	int detached_metadata_device)
 {
-	struct json_object *jobj1, *jobj_keyslots, *jobj_segments, *jobj_config;
+	struct json_object *jobj_segment, *jobj_integrity, *jobj_keyslots, *jobj_segments, *jobj_config;
 	char num[24], cipher[128];
 	uint64_t offset, json_size, keyslots_size;
 	uuid_t partitionUuid;
@@ -179,8 +179,8 @@ int LUKS2_generate_hdr(
 		return -EINVAL;
 	}
 
-	jobj1 = json_object_new_object();
-	json_object_object_add(jobj1, "type", json_object_new_string("crypt"));
+	jobj_segment = json_object_new_object();
+	json_object_object_add(jobj_segment, "type", json_object_new_string("crypt"));
 	if (detached_metadata_device)
 		offset = alignPayload * sector_size;
 	else {
@@ -190,15 +190,22 @@ int LUKS2_generate_hdr(
 		offset += alignOffset;
 	}
 
-	json_object_object_add(jobj1, "offset", json_object_new_string(uint64_to_str(num, sizeof(num), &offset)));
-	json_object_object_add(jobj1, "iv_tweak", json_object_new_string("0"));
-	json_object_object_add(jobj1, "size", json_object_new_string("dynamic"));
-	json_object_object_add(jobj1, "encryption", json_object_new_string(cipher));
-	json_object_object_add(jobj1, "sector_size", json_object_new_int(sector_size));
-	if (integrity)
-		json_object_object_add(jobj1, "integrity", json_object_new_string(integrity));
+	json_object_object_add(jobj_segment, "offset", json_object_new_string(uint64_to_str(num, sizeof(num), &offset)));
+	json_object_object_add(jobj_segment, "iv_tweak", json_object_new_string("0"));
+	json_object_object_add(jobj_segment, "size", json_object_new_string("dynamic"));
+	json_object_object_add(jobj_segment, "encryption", json_object_new_string(cipher));
+	json_object_object_add(jobj_segment, "sector_size", json_object_new_int(sector_size));
+
+	if (integrity) {
+		jobj_integrity = json_object_new_object();
+		json_object_object_add(jobj_integrity, "type", json_object_new_string(integrity));
+		json_object_object_add(jobj_integrity, "journal_encryption", json_object_new_string("none"));
+		json_object_object_add(jobj_integrity, "journal_integrity", json_object_new_string("none"));
+		json_object_object_add(jobj_segment, "integrity", jobj_integrity);
+	}
+
 	snprintf(num, sizeof(num), "%u", CRYPT_DEFAULT_SEGMENT);
-	json_object_object_add(jobj_segments, num, jobj1);
+	json_object_object_add(jobj_segments, num, jobj_segment);
 
 	json_size = hdr->hdr_size - LUKS2_HDR_BIN_LEN;
 	json_object_object_add(jobj_config, "json_size",

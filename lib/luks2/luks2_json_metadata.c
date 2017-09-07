@@ -56,7 +56,7 @@ void JSON_DBG(json_object *jobj, const char *desc)
 	/* FIXME: make this conditional and disable for stable release. */
 	if (desc)
 		log_dbg("%s:", desc);
-	log_dbg("%s", json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PLAIN));
+	log_dbg("%s", json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PRETTY));
 }
 
 /*
@@ -470,7 +470,7 @@ static int hdr_validate_tokens(json_object *hdr_jobj)
 static int hdr_validate_segments(json_object *hdr_jobj)
 {
 	json_object *jobj, *jobj_digests, *jobj_offset, *jobj_ivoffset,
-		    *jobj_length, *jobj_sector_size, *jobj_type;
+		    *jobj_length, *jobj_sector_size, *jobj_type, *jobj_integrity;
 	uint32_t sector_size;
 	uint64_t ivoffset, offset, length;
 
@@ -499,6 +499,15 @@ static int hdr_validate_segments(json_object *hdr_jobj)
 		    !contains(val, key, "Segment", "encryption",   json_type_string) ||
 		    !(jobj_sector_size = contains(val, key, "Segment", "sector_size", json_type_int)))
 			return 1;
+
+		/* integrity */
+		if (json_object_object_get_ex(val, "integrity", &jobj_integrity)) {
+			if (!contains(val, key, "Segment", "integrity", json_type_object) ||
+			    !contains(jobj_integrity, key, "Segment integrity", "type", json_type_string) ||
+			    !contains(jobj_integrity, key, "Segment integrity", "journal_encryption", json_type_string) ||
+			    !contains(jobj_integrity, key, "Segment integrity", "journal_integrity", json_type_string))
+				return 1;
+		}
 
 		/* enforce uint32_t type */
 		if (!validate_json_uint32(jobj_sector_size)) {
@@ -1305,7 +1314,8 @@ static void hdr_dump_segments(struct crypt_device *cd, json_object *hdr_jobj)
 		json_object_object_get_ex(val, "sector_size", &jobj3);
 		log_std(cd, "\tsector: %" PRIu32 " [bytes]\n", json_object_get_uint32(jobj3));
 
-		if (json_object_object_get_ex(val, "integrity", &jobj3))
+		if (json_object_object_get_ex(val, "integrity", &jobj2) &&
+		    json_object_object_get_ex(jobj2, "type", &jobj3))
 			log_std(cd, "\tintegrity: %s\n", json_object_get_string(jobj3));
 
 		log_std(cd, "\n");
@@ -1370,84 +1380,6 @@ uint64_t LUKS2_get_data_offset(struct luks2_hdr *hdr)
 	return get_first_data_offset(jobj1, "crypt") / SECTOR_SIZE;
 }
 
-int LUKS2_activate(struct crypt_device *cd,
-	const char *name,
-	struct volume_key *vk,
-	uint32_t flags)
-{
-	int r;
-	enum devcheck device_check;
-	struct luks2_hdr *hdr = crypt_get_hdr(cd, CRYPT_LUKS2);
-	struct crypt_dm_active_device dmd = {
-		.target = DM_CRYPT,
-		.uuid   = crypt_get_uuid(cd),
-		.flags  = flags,
-		.size   = 0,
-		.data_device = crypt_data_device(cd),
-		.u.crypt = {
-			.vk     = vk,
-			.offset = crypt_get_data_offset(cd),
-			.cipher = LUKS2_get_cipher(hdr, 0),
-			.integrity = crypt_get_integrity(cd),
-			.iv_offset = 0,
-			.tag_size = crypt_get_integrity_tag_size(cd),
-			.sector_size = crypt_get_sector_size(cd)
-		}
-	};
-	char dm_int_name[PATH_MAX], dm_int_dev_name[PATH_MAX];
-	struct device *device = NULL;
-
-	/* Add persistent activation flags */
-	if (!(flags & CRYPT_ACTIVATE_IGNORE_PERSISTENT))
-		LUKS2_config_get_flags(cd, hdr, &dmd.flags);
-
-	if (dmd.flags & CRYPT_ACTIVATE_SHARED)
-		device_check = DEV_SHARED;
-	else
-		device_check = DEV_EXCL;
-
-	if (dmd.u.crypt.tag_size) {
-		snprintf(dm_int_name, sizeof(dm_int_name), "%s_dif", name);
-		r = INTEGRITY_activate(cd, dm_int_name, NULL, NULL, NULL, NULL, flags);
-		if (r)
-			return r;
-
-		snprintf(dm_int_dev_name, sizeof(dm_int_dev_name), "%s/%s", dm_get_dir(), dm_int_name);
-		r = device_alloc(&device, dm_int_dev_name);
-		if (r) {
-			dm_remove_device(cd, dm_int_name, 0);
-			return r;
-		}
-
-		/* Space for IV metadata only */
-		if (!dmd.u.crypt.integrity)
-			dmd.u.crypt.integrity = "none";
-
-		dmd.data_device = device;
-		dmd.u.crypt.offset = 0;
-
-		r = INTEGRITY_data_sectors(cd, crypt_data_device(cd),
-					   crypt_get_data_offset(cd) * SECTOR_SIZE,
-					   &dmd.size);
-		if (r < 0) {
-			log_err(cd, "Cannot detect integrity device size\n.");
-			dm_remove_device(cd, dm_int_name, 0);
-			return r;
-		}
-	}
-
-	r = device_block_adjust(cd, dmd.data_device, device_check,
-				 dmd.u.crypt.offset, &dmd.size, &dmd.flags);
-	if (!r)
-		r = dm_create_device(cd, name, CRYPT_LUKS2, &dmd, 0);
-
-	if (r < 0 && dmd.u.crypt.integrity)
-		dm_remove_device(cd, dm_int_name, 0);
-
-	device_free(device);
-	return r;
-}
-
 const char *LUKS2_get_cipher(struct luks2_hdr *hdr, int segment)
 {
 	json_object *jobj1, *jobj2, *jobj3;
@@ -1470,7 +1402,7 @@ const char *LUKS2_get_cipher(struct luks2_hdr *hdr, int segment)
 
 const char *LUKS2_get_integrity(struct luks2_hdr *hdr, int segment)
 {
-	json_object *jobj1, *jobj2, *jobj3;
+	json_object *jobj1, *jobj2, *jobj3, *jobj4;
 	char buf[16];
 
 	if (segment < 0 || snprintf(buf, sizeof(buf), "%u", segment) < 1)
@@ -1485,7 +1417,38 @@ const char *LUKS2_get_integrity(struct luks2_hdr *hdr, int segment)
 	if (!json_object_object_get_ex(jobj2, "integrity", &jobj3))
 		return 0;
 
-	return json_object_get_string(jobj3);
+	if (!json_object_object_get_ex(jobj3, "type", &jobj4))
+		return 0;
+
+	return json_object_get_string(jobj4);
+}
+
+/* FIXME: this only ensures that once we have journal encryption, it is not ignored. */
+static int LUKS2_integrity_compatible(struct luks2_hdr *hdr)
+{
+	json_object *jobj1, *jobj2, *jobj3, *jobj4;
+	const char *str;
+
+	if (!json_object_object_get_ex(hdr->jobj, "segments", &jobj1))
+		return 0;
+
+	if (!json_object_object_get_ex(jobj1, CRYPT_DEFAULT_SEGMENT_STR, &jobj2))
+		return 0;
+
+	if (!json_object_object_get_ex(jobj2, "integrity", &jobj3))
+		return 0;
+
+	if (!json_object_object_get_ex(jobj3, "journal_encryption", &jobj4) ||
+	    !(str = json_object_get_string(jobj4)) ||
+	    strcmp(str, "none"))
+		return 0;
+
+	if (!json_object_object_get_ex(jobj3, "journal_integrity", &jobj4) ||
+	    !(str = json_object_get_string(jobj4)) ||
+	    strcmp(str, "none"))
+		return 0;
+
+	return 1;
 }
 
 static int LUKS2_keyslot_get_volume_key_size(struct luks2_hdr *hdr, const char *keyslot)
@@ -1555,4 +1518,87 @@ int LUKS2_get_sector_size(struct luks2_hdr *hdr)
 		return SECTOR_SIZE;
 
 	return json_object_get_int(jobj1);
+}
+
+int LUKS2_activate(struct crypt_device *cd,
+	const char *name,
+	struct volume_key *vk,
+	uint32_t flags)
+{
+	int r;
+	enum devcheck device_check;
+	struct luks2_hdr *hdr = crypt_get_hdr(cd, CRYPT_LUKS2);
+	struct crypt_dm_active_device dmd = {
+		.target = DM_CRYPT,
+		.uuid   = crypt_get_uuid(cd),
+		.flags  = flags,
+		.size   = 0,
+		.data_device = crypt_data_device(cd),
+		.u.crypt = {
+			.vk     = vk,
+			.offset = crypt_get_data_offset(cd),
+			.cipher = LUKS2_get_cipher(hdr, 0),
+			.integrity = crypt_get_integrity(cd),
+			.iv_offset = 0,
+			.tag_size = crypt_get_integrity_tag_size(cd),
+			.sector_size = crypt_get_sector_size(cd)
+		}
+	};
+	char dm_int_name[PATH_MAX], dm_int_dev_name[PATH_MAX];
+	struct device *device = NULL;
+
+	/* Add persistent activation flags */
+	if (!(flags & CRYPT_ACTIVATE_IGNORE_PERSISTENT))
+		LUKS2_config_get_flags(cd, hdr, &dmd.flags);
+
+	if (dmd.flags & CRYPT_ACTIVATE_SHARED)
+		device_check = DEV_SHARED;
+	else
+		device_check = DEV_EXCL;
+
+	if (dmd.u.crypt.tag_size) {
+		if (!LUKS2_integrity_compatible(hdr)) {
+			log_err(cd, "Unsupported device integrity configuration.\n");
+			return -EINVAL;
+		}
+
+		snprintf(dm_int_name, sizeof(dm_int_name), "%s_dif", name);
+		r = INTEGRITY_activate(cd, dm_int_name, NULL, NULL, NULL, NULL, flags);
+		if (r)
+			return r;
+
+		snprintf(dm_int_dev_name, sizeof(dm_int_dev_name), "%s/%s", dm_get_dir(), dm_int_name);
+		r = device_alloc(&device, dm_int_dev_name);
+		if (r) {
+			dm_remove_device(cd, dm_int_name, 0);
+			return r;
+		}
+
+		/* Space for IV metadata only */
+		if (!dmd.u.crypt.integrity)
+			dmd.u.crypt.integrity = "none";
+
+		dmd.data_device = device;
+		dmd.u.crypt.offset = 0;
+
+		r = INTEGRITY_data_sectors(cd, crypt_data_device(cd),
+					   crypt_get_data_offset(cd) * SECTOR_SIZE,
+					   &dmd.size);
+		if (r < 0) {
+			log_err(cd, "Cannot detect integrity device size.\n");
+			dm_remove_device(cd, dm_int_name, 0);
+			return r;
+		}
+	}
+
+	r = device_block_adjust(cd, dmd.data_device, device_check,
+				 dmd.u.crypt.offset, &dmd.size, &dmd.flags);
+	if (!r)
+		r = dm_create_device(cd, name, CRYPT_LUKS2, &dmd, 0);
+
+	if (r < 0 && dmd.u.crypt.integrity)
+		dm_remove_device(cd, dm_int_name, 0);
+
+	device_free(device);
+	return r;
 }

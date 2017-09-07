@@ -3478,7 +3478,7 @@ const char *crypt_get_integrity(struct crypt_device *cd)
 		return cd->u.integrity.params.integrity;
 
 	if (isLUKS2(cd->type))
-		return LUKS2_get_integrity(&cd->u.luks2.hdr, 0);
+		return LUKS2_get_integrity(&cd->u.luks2.hdr, CRYPT_DEFAULT_SEGMENT);
 
 	return NULL;
 }

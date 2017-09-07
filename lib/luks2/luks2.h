@@ -47,6 +47,7 @@ typedef int digests_t[LUKS2_DIGEST_MAX];
 
 #define CRYPT_ANY_SEGMENT -1
 #define CRYPT_DEFAULT_SEGMENT 0
+#define CRYPT_DEFAULT_SEGMENT_STR "0"
 
 /*
  * LUKS2 header on-disk.
