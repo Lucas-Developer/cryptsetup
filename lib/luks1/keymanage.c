@@ -778,7 +778,7 @@ int LUKS_generate_phdr(struct luks_phdr *header,
 	}
 
 	/* Compute master key digest */
-	pbkdf = CONST_CAST(struct crypt_pbkdf_type *)crypt_get_pbkdf_type(ctx);
+	pbkdf = crypt_get_pbkdf(ctx);
 	r = crypt_benchmark_pbkdf_internal(ctx, pbkdf, vk->keylength);
 	if (r < 0)
 		return r;
@@ -869,7 +869,7 @@ int LUKS_set_key(unsigned int keyIndex,
 	}
 
 	log_dbg("Calculating data for key slot %d", keyIndex);
-	pbkdf = CONST_CAST(struct crypt_pbkdf_type *)crypt_get_pbkdf_type(ctx);
+	pbkdf = crypt_get_pbkdf(ctx);
 	r = crypt_benchmark_pbkdf_internal(ctx, pbkdf, vk->keylength);
 	if (r < 0)
 		return r;
@@ -1183,6 +1183,7 @@ int LUKS1_activate(struct crypt_device *cd,
 			.vk     = vk,
 			.offset = crypt_get_data_offset(cd),
 			.iv_offset = 0,
+			.sector_size = crypt_get_sector_size(cd),
 		}
 	};
 
